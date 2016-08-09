@@ -1,0 +1,273 @@
+
+#ifndef FPGA_H
+#define FPGA_H
+
+#include <stdint.h>
+
+#include "data_source.hpp"
+
+
+#define EN_PRI_VOL_CHNL_ADAPTIVE   0
+
+struct fpga_reg;
+class raw_wave;
+ 
+
+struct adc_range
+{
+    int fpga_reg_value;
+    double range_min;
+    double range_max;
+    double scale;
+};
+
+
+class fpga_dev:public data_source
+{
+public:
+    fpga_dev();
+    virtual ~fpga_dev();
+
+    enum AD_CHNL_STYLE {
+        LOAD_CUR_CHNL,
+        SRC_VOL_CHNL,
+        PRI_VOL_CHNL,
+        SECOND_VOL_CHNL,
+        LOAD_VOL_CHNL = SECOND_VOL_CHNL,
+        MAX_CHNL_NUM
+    };
+
+    enum {
+        MAX_RANGE_VOL = 1000,
+        MAX_RANGE_CUR = 35
+    };
+
+    void init( void *fpga_reg, int cycle_count );
+
+    /*
+     *  @Func:  开始电源模块输出
+     *
+     *  @Return:
+     *      0: success
+     *     <0: failed
+     *  @Note:
+     *     1、电源模块的输出时能，输出电压为0V。仅需要调用一次，后续直接调用set_v配置输出电压即可。
+     *     2、调用stop_output函数停止电源模块输出
+     */
+    int start_output();
+
+    /*
+     *  @Func:  停止电源模块输出
+     *
+     *  @Return:
+     *      0: success
+     *     <0: failed
+     *  @Note:
+     *     1、停止电源的输出，在停止前会配置电源模块输出到0V。
+     */
+    int stop_output();
+
+    bool is_output_started() {return this->output_started;}
+
+    /*
+     *  @Func:  safe_output
+     *  @Desc:
+     *     电源的输出不能跳变，只能平稳过度，配置电源安全输出到指定电压
+     *  @Input:
+     *     v:               output voltage
+     *     adapte_range:    适应AD量程
+     *  @Return:
+     *      0: success
+     *     <0: failed
+     *  @Note:
+     *     1、changed ADC Range of SRC_VOL_CHNL and SECOND_VOL_CHNL based on \a v
+     *     2、changed ADC Range of LOAD_CUR_CHNL and PRI_VOL_CHNL to max range.
+     *     3、如果未启动电源输出，返回-2
+     */
+    int safe_output(double v, bool adapte_range = true);
+
+    /*
+     *  @Func:  自动量程切换
+     *
+     *  @input:
+     *
+     *  @Return:
+     *      0: success
+     *     -1: failed
+     *
+     *  @Note:
+     *      启动测试后，必须先选择好量程
+     */
+    int auto_select_range(bool ILoad, bool UPri, bool USrc = false, bool ULoad = false);
+
+    /*
+     *  @Func:  退磁
+     *
+     *  @input:
+     *      none
+     *
+     *  @Return:
+     *      0: success
+     *     -1: failed
+     *
+     *  @Note:
+     *      测试结束后，必须对CT/PT退磁操作
+     */
+    int demagnetization();
+
+
+    /*
+     *  @Func:  get_active_sample_wave
+     *
+     *  @Desc:
+     *
+     *  @input:
+     *      none
+     *  @Return:
+     *      0: success
+     *     -1: failed
+     *  @Note:
+     *      adaptive ADC range for LOAD_CUR_CHNL and PRI_VOL_CHNL
+     */
+    int get_active_sample_wave(raw_wave *wave_i_load,
+                               raw_wave *wave_u_src,
+                               raw_wave *wave_u_pri,
+                               raw_wave *wave_u_load);
+
+    const struct adc_range* adc_range_info(AD_CHNL_STYLE chnl) {return this->adc_range[chnl];}
+
+
+    /*
+     *  @Func:  read
+     *
+     *  @Desc:
+     *      从FPGA获取4通道AD的采样数据
+     *
+     *  @input:
+     *      none
+     *
+     *  @Return:
+     *      0: success
+     *     -1: failed
+     *
+     *  @Note:
+     *      测试结束后，必须对CT/PT退磁操作
+     */
+    int read( raw_wave *wave_i_load,
+              raw_wave *wave_u_src,
+              raw_wave *wave_u_pri,
+              raw_wave *wave_u_load);
+
+    // 运行状态
+    bool is_current_overflow(void);
+    bool is_temperature_overflow(void);
+
+
+    bool adc_start_sample(void);
+    bool adc_stop_sample(void);
+    bool is_sample_started() {return this->sample_started;}
+
+    uint32_t version(void);
+
+public:
+    int dc_ac_f_set( double freq ); // in Hz ; 4Hz ~ 300Hz
+    int set_np_per_cycle( int np_per_cycle );
+
+    int set_max_range();
+    uint8_t get_range(int chnl);
+
+
+    /*
+     *  @Func:  select_range_by_value
+     *
+     *  @Desc:
+     *      根据电压或电流值来选择AD相应的量程。
+     *
+     *  @input:
+     *      chnl:     AD通道号: 0:电流通道 1/2/3:电压通道
+     *      rms:      电压电流的有效值
+     *
+     *  @Return:
+     *      true: success
+     *     false: failed
+     *
+     *  @Note:
+     *     实际量程 = rms*sqrt(2)*2
+     */
+    bool select_range_by_value( int chnl, double rms );
+
+    /*
+     *  @Func:  wait for output steaby
+     *
+     *  @Return:
+     *      0: success
+     *     <0: failed
+     *
+     *  @Note:
+     *     must set AD range and start AD sample.
+     */
+    int wait_output_steaby(AD_CHNL_STYLE chnl = SRC_VOL_CHNL);
+
+public:
+    virtual bool auto_scan_prepare( const struct ct_setting &setting );
+    virtual bool auto_scan_prepare( const struct pt_setting &setting );
+    virtual bool auto_scan_step( struct auto_scan_result &result );
+
+private:
+
+    // ctrl
+    bool dc_dc_start(void);
+    bool dc_dc_stop(void);
+    bool dc_ac_enable(void);
+    bool dc_ac_start(void);
+    bool dc_ac_stop(void);
+    bool dc_ac_disable(void);
+
+    int set_v(double v);
+    int dc_dc_v_set_percent( double spwm_percent );
+    int dc_ac_v_set_percent( double pwm_percent );
+    int dc_dc_v_to_percent(double percent);
+    int dc_ac_v_to_percent(double percent);
+
+    //  not used
+    int dc_ac_p_set( double init_phase ); // in degree
+    // 死区时间设置
+    int dead_time_set( uint32_t ns10 );
+
+    void set_scale( const double *scale ){
+        this->scales[0] = scale[0];
+        this->scales[1] = scale[1];
+        this->scales[2] = scale[2];
+        this->scales[3] = scale[3];
+    }
+
+private:
+    struct fpga_reg *fpga_reg;
+    struct fpga_reg *fpga_reg_backup;
+    double fs;
+    double np;
+    int np_per_channel;
+    int np_per_cycle;
+    int cycle_count;
+    int16_t *data;
+    int16_t *data_ok;
+    int      data_buffer_np;
+    double freq;
+
+    double scales[4];
+    double fix_b[4];
+    const struct adc_range *adc_range[4];
+
+    void update_fs( void );
+
+    int fd;
+
+    bool sample_started;
+
+    bool output_started;
+    double output_voltage;
+    double pwm_percent;
+    double spwm_percent;
+};
+
+#endif /* FPGA_H */

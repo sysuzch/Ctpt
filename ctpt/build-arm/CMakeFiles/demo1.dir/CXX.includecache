@@ -1,0 +1,16 @@
+#IncludeRegexLine: ^[ 	]*#[ 	]*(include|import)[ 	]*[<"]([^">]+)([">])
+
+#IncludeRegexScan: ^.*$
+
+#IncludeRegexComplain: ^$
+
+#IncludeRegexTransform: 
+
+../ctpt_api.hpp
+
+/home/tarena/ctpt/test/demo.cxx
+iostream
+-
+ctpt_api.hpp
+/home/tarena/ctpt/test/ctpt_api.hpp
+

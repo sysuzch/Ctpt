@@ -1,0 +1,4 @@
+/home/tarena/ctpt/testbuild/CMakeFiles/fpga.dir
+/home/tarena/ctpt/testbuild/CMakeFiles/demo1.dir
+/home/tarena/ctpt/testbuild/CMakeFiles/ctpt_sim.dir
+/home/tarena/ctpt/testbuild/CMakeFiles/ctpt.dir

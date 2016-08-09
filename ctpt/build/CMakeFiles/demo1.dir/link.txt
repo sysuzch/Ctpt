@@ -1,0 +1,1 @@
+/usr/bin/c++      CMakeFiles/demo1.dir/test/demo.cxx.o  -o demo1 -rdynamic libctpt.so -lfftw3 -lpthread -Wl,-rpath,/home/tarena/ctpt/build 

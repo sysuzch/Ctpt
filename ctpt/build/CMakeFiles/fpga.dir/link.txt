@@ -1,0 +1,1 @@
+/usr/bin/c++      CMakeFiles/fpga.dir/test/demo_fpga.cxx.o  -o fpga -rdynamic libctpt.so -lfftw3 -lpthread -Wl,-rpath,/home/tarena/ctpt/build 
