@@ -1,1 +1,0 @@
-/opt/arm-linux-gnueabihf/bin/arm-linux-gnueabihf-g++   -g   CMakeFiles/demo1.dir/test/demo.cxx.o  -o demo1 -rdynamic libctpt.so ../armhf/libfftw3.a -lpthread -Wl,-rpath,/home/tarena/ctpt/build-arm 

@@ -1,1 +1,0 @@
-/opt/arm-linux-gnueabihf/bin/arm-linux-gnueabihf-g++   -g   CMakeFiles/fpga.dir/test/demo_fpga.cxx.o  -o fpga -rdynamic libctpt.so ../armhf/libfftw3.a -lpthread -Wl,-rpath,/home/tarena/ctpt/build-arm 

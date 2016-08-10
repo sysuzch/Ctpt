@@ -1,4 +1,0 @@
-/home/tarena/ctpt/build-arm/CMakeFiles/demo1.dir
-/home/tarena/ctpt/build-arm/CMakeFiles/ctpt_sim.dir
-/home/tarena/ctpt/build-arm/CMakeFiles/ctpt.dir
-/home/tarena/ctpt/build-arm/CMakeFiles/fpga.dir
