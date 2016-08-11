@@ -43,6 +43,11 @@ std::stringstream g_ctpt_log;
 
 #define SIMULATION
 //#undef SIMULATION
+
+//定义最小输出频率
+#define MIN_FREQUENCY 1
+
+
 static double g_vols[] = {
     3035.582,
     2991.274,
@@ -203,6 +208,11 @@ public:
     int test_excitation(void);
     int test_excitation_output(double freq, std::list<struct test_result> *list_result);
     int test_resistance(void);
+	int	check_config(void)；
+	void set_all_channel_max_range(void);
+	int set_output_freq_np(double freq);
+	int output_transform_freq(double out_vol);
+	int exciting_out_volte(double out_vol);
 
     bool find_knee_point( struct auto_scan_result &r );
     bool find_knee_point( void );
@@ -275,6 +285,9 @@ public:
     double user_cur;
     double user_freq;
 
+	double Max_out_vol;
+	double Max_out_current;
+	
     double user_result_vol;
     double user_result_cur;
 
@@ -369,19 +382,39 @@ ctpt_result::~ctpt_result()
 struct test_result {
     double vol;
     double cur;
+	double peak_vol;
+	double peak_cur;
+	double angle_vol;
+	double angle_cur;
 
     test_result(const test_result& copyin) {
         this->vol = copyin.vol; this->cur = copyin.cur;
+		this->peak_vol = copyin.peak_vol; this->peak_cur = copyin.peak_cur;
+		this->angle_vol = copyin.angle_vol; this->angle_cur = copyin.angle_cur;
     }
     test_result() {
         this->vol = 0.0;
         this->cur = 0.0;
+		this->peak_cur = 0.0;
+		this->peak_vol = 0.0;
+		this->angle_vol = 0;
+		this->angle_cur = 0.0;
     }
 
-    test_result &operator=(const test_result &rhs) {this->vol = rhs.vol; this->cur = rhs.cur; return *this;}
+    test_result &operator=(const test_result &rhs) 
+	{
+		this->vol = rhs.vol; this->cur = rhs.cur; 
+		this->peak_vol = rhs.peak_vol; this->peak_cur = rhs.peak_cur;
+		this->angle_vol = rhs.angle_vol; this->angle_cur = rhs.angle_cur;
+		return *this;
+	}
     int operator==(const test_result &rhs) {
         if(this->vol != rhs.vol) return 0;
         if(this->cur != rhs.cur) return 0;
+		if(this->peak_vol != rhs.peak_vol) return 0;
+        if(this->peak_cur != rhs.peak_cur) return 0;
+		if(this->angle_vol != rhs.angle_vol) return 0;
+        if(this->angle_cur != rhs.angle_cur) return 0;
         return 1;
     }
 };
@@ -389,21 +422,10 @@ struct test_result {
 
 void ctpt_ctrl_private::main_thread( ctpt_ctrl_private *p_this )
 {
-    int ret;
-    raw_wave wave_i_load;
-    raw_wave wave_u_src;
-    raw_wave wave_u_pri;
-    raw_wave wave_u_load;
-
-    struct test_result result;
-    std::list<struct test_result> list_result;
-
-    // static data_source_fpga dsf;
-
-    std::cout<< "main thread init" << std::endl;
-
+	printf("--- Start main thread ----\n");
+	
 #ifndef SIMULATION
-    //comment this when simulation
+	std::cout<< "main thread init" << std::endl;
     fpga.init(0, 4 );
 #endif
 
@@ -411,174 +433,15 @@ void ctpt_ctrl_private::main_thread( ctpt_ctrl_private *p_this )
         sem_wait(&p_this->sem);
 
         if(p_this->user_mode == USER_TEST_SELFCHECK) {
-            std::cout<< "slef check running test" << std::endl;
-            const char *filename = "/mnt/mmcblk0p1/data.csv";
-            FILE *fp = fopen(filename, "w");
-
-            fpga.dc_ac_f_set( p_this->user_freq );
-            fpga.select_range_by_value(fpga_dev::PRI_VOL_CHNL, 30.0);
-            fpga.start_output();
-            fpga.safe_output(p_this->user_vol, true);
-            fpga.wait_output_steaby();
-            fpga.adc_start_sample();
-
-            do {
-                ret = fpga.read( &wave_i_load, &wave_u_src, &wave_u_pri, &wave_u_load );
-                if (ret== 0){
-                    wave_i_load.calculate_all();
-                    wave_u_src.calculate_all();
-                    wave_u_pri.calculate_all();
-                    wave_u_load.calculate_all();
-
-                    p_this->user_result_vol = wave_u_pri.get_rms();
-                    p_this->user_result_cur = wave_i_load.get_rms();
-
-                    fp = fopen(filename, "w");
-                    if (fp){
-                        printf("ch1=%fA,ch2=%fV,ch3=%fV,ch4=%fV,\n",
-                               wave_i_load.get_rms(),
-                               wave_u_src.get_rms(),
-                               wave_u_pri.get_rms(),
-                               wave_u_load.get_rms()
-                            );
-                        fclose(fp);
-                    }
-                    int n = wave_i_load.get_np();
-                    std::vector<double> &chd1 = wave_i_load.get_writable_buffer();
-                    std::vector<double> &chd2 = wave_u_src.get_writable_buffer();
-                    std::vector<double> &chd3 = wave_u_pri.get_writable_buffer();
-                    std::vector<double> &chd4 = wave_u_load.get_writable_buffer();
-                    for (int i=0; i<n; i++ ) {
-                        printf("%6.4f, %6.4f, %6.4f, %6.4f\n ",
-                               chd1[i],
-                               chd2[i],
-                               chd3[i],
-                               chd4[i]
-                            );
-                    }
-                }
-                sleep(1);
-            }while (!p_this->is_stopped);
-            fpga.stop_output();
-            fpga.adc_stop_sample();
+            printf("p_this->user_mode == USER_TEST_SELFCHECK\n" );
+            
         }
         else if (p_this->user_mode == USER_TEST_EXCITING){
-            std::cout<< "exciting running test" << std::endl;
-
-            double start_v = 0.1;
-            double maxV = p_this->user_vol;
-            double maxI = p_this->user_cur;
-            double step_v = 0.3;
-
-            raw_wave ch1;               // load current
-            raw_wave ch2;               // src voltage
-            raw_wave ch3;               // primary voltage
-            raw_wave ch4;               // load voltage
-
-            if (maxI > 4.0) {
-                maxI = 4.0;
-            }
-            if (maxV > 120.0) {
-                maxV = 120.0;
-            }
-            printf("++maxI: %f  maxV:  %f++\n", maxI, maxV);
-
-            list_result.clear();
-            p_this->npoint_exciting = 0;
-
-            fpga.dc_ac_f_set( p_this->user_freq );
-            fpga.set_np_per_cycle( 512 );
-
-            fpga.select_range_by_value(2, 30.0);
-            fpga.adc_start_sample();
-            fpga.start_output();
-
-            do {
-                printf("++set_v %f++\n", start_v);
-                if (start_v < 1.0) {
-                    step_v = 1;
-                }
-                else if (start_v < 30.0) {
-                    step_v = 2;
-                }
-                else if (start_v < 50.0) {
-                    step_v = 0.3/*5.0*/;
-                }
-                else {
-                    step_v = 0.5;
-                }
-                ret = fpga.safe_output(start_v, true);
-                if (ret != 0) {
-                    break;
-                }
-                printf("++wait_output_steaby++\n");
-                ret = fpga.wait_output_steaby();
-                if (ret != 0) {
-                    break;
-                }
-                printf("++get_active_sample_wave++\n");
-                ret = fpga.get_active_sample_wave(&ch1, &ch2, &ch3, &ch4 );
-                if (ret != 0) {
-                    break;
-                }
-                result.vol = ch2.get_base_rms();
-                result.cur = ch1.get_base_rms();
-                printf("chnl1:%f chnl2:%f chnl3:%f chnl4:%f------\n", ch1.get_base_rms(), ch2.get_base_rms(), ch3.get_base_rms(), ch4.get_base_rms());
-                //printf("++vol:%f  cur:%f++\n", result.vol, result.cur);
-                list_result.push_back(result);
-                if (result.vol >= maxV || result.cur >= maxI || start_v >= maxV*2 || start_v >= 150) {
-                    break;
-                }
-                start_v += step_v;
-            } while(!p_this->is_stopped);
-
-            fpga.stop_output();
-            fpga.adc_stop_sample();
-
-            //copy data to dst
-            if (list_result.size() != 0) {
-                double preV;
-                double preC;
-                double k = 0;
-                int i = 0;
-                printf("++clear++\n");
-                int np = list_result.size();
-                printf("++copy++\n");
-                __safe_free(p_this->exciting_current );
-                __safe_free(p_this->exciting_voltage );
-                p_this->exciting_current   = (double*)malloc( np * sizeof(double) );
-                if (!p_this->exciting_current) {
-                    printf("++p_this->exciting_current error++\n");
-                }
-                p_this->exciting_voltage   = (double*)malloc( np * sizeof(double) );
-                if (!p_this->exciting_voltage) {
-                    printf("++p_this->exciting_voltage error++\n");
-                }
-                for(std::list<struct test_result>::iterator it = list_result.begin(); it != list_result.end(); it++) {
-                    if (i == 0) {
-                        preV = it->vol;
-                        preC = it->cur;
-                    }
-                    else {
-                        if (preV > it->vol || preC > it->cur*1.1) {
-                            continue;
-                        }
-                        preV = it->vol;
-                        preC = it->cur;
-                    }
-                    p_this->exciting_voltage[i] = it->vol;
-                    p_this->exciting_current[i] = it->cur;
-                    printf("++i: %d vol:%f  cur:%f++\n", i, it->vol, it->cur);
-                    i++;
-                }
-                p_this->npoint_exciting = i;
-            }
-            p_this->is_stopped = true;
-        }
+			printf("p_this->user_mode == USER_TEST_EXCITING\n" );
+            p_this->run_test();
+		}
         else {
             printf("p_this->user_mode == USER_TEST_RUN\n");
-
-            p_this->run_test();
         }
     }
 }
@@ -599,7 +462,9 @@ ctpt_ctrl_private::ctpt_ctrl_private():
     user_mode(USER_TEST_NONE),
     npoint_exciting(0),
     exciting_current(0),
-    exciting_voltage(0)
+    exciting_voltage(0)，
+	Max_out_vol(120),
+	Max_out_current(5)
 
 {
 
@@ -710,33 +575,110 @@ void ctpt_ctrl_private::run_test( void )
 
 	/*根据选定项目进行测试*/
     enum ctpt_test_item ti = ct_setting.test_item;
-	//若已测励磁曲线，则不单独测变比
-	bool isTestExcitation = false;
-        if((ti & ITEM_RESISTANCE) == ITEM_RESISTANCE)
+	
+	//测量直阻
+    if((ti & ITEM_RESISTANCE) == ITEM_RESISTANCE)
 	{
 		test_resistance();	
 	}
-        if((ti & ITEM_EXCITATION) == ITEM_EXCITATION)
+	//励磁特性测试
+    if((ti & ITEM_EXCITATION) == ITEM_EXCITATION)
 	{
 		test_excitation();	
-		isTestExcitation = true;
 	}
-        if(((ti & ITEM_RATIO) == ITEM_RATIO)&& !isTestExcitation)
+	//测量变比
+    if((ti & ITEM_RATIO) == ITEM_RATIO)
 	{
-                test_ratio();
+		test_radio();	
 	}
-        if((ti & ITEM_BURDEN )== ITEM_BURDEN)
+	//测量负载
+    if((ti & ITEM_BURDEN )== ITEM_BURDEN)
 	{
 			
 	}
 
-        if ( this->listener )
-        {
-           this->listener->process(100);
-        }
+	if ( this->listener )
+	{
+	   this->listener->process(100);
+	}
 	
 
 }
+
+/**********************************************
+* @Desc:设定输出电压频率及其相应的每周期采样点
+*		采样点数越高，计算RMS值误差越小，在保证计算
+*		速度的情况下应尽量增加采样点数。
+* @return:int
+* @Author:zch
+* @Date:2016.08.10
+*
+***********************************************/
+int ctpt_ctrl_private::set_output_freq_np(double freq)
+{
+	int np = 512;
+	fpga.dc_ac_f_set( freq );
+	if(freq<15)
+		np = 4096;
+	else if(freq<30)
+		np = 2048;
+	else if(freq<45)
+		np = 1024;
+	else 
+		np = 512;	
+	fpga.set_np_per_cycle( np );
+	printf("--- Change the frequency to d% and sample points to d% ---\n",freq,np);
+}
+/**********************************************
+* @Desc:当输出电压达到逆变最大值后，采用变频方法
+*		进行等效电压输出相应频率，实际电压不变,
+		为最大输出电压120V。
+*		转换公式：U = f*U'/f'
+* @return:int
+* @Author:zch
+* @Date:2016.08.10
+*
+***********************************************/
+int ctpt_ctrl_private::output_transform_freq(double out_vol)
+{
+	double freq = ct_setting.rated_frequency;
+	//calculate the transform frequency
+	freq = (Max_out_vol*ct_setting.rated_frequency )/ out_vol;	
+	
+	if(freq < ((double)MIN_FREQUENCY))
+	{
+		printf("!!!! Warning,Reach the Min frequency!!!!\n")
+		return -1;
+	}		
+	//set the frequency
+	set_output_freq_np(freq);
+	test_frequency = freq;
+	//output volte
+	return fpga.safe_output(Max_out_vol, true);
+}
+/**********************************************
+* @Desc:励磁输出，当输出电压达到逆变最大值后，采用变频方法
+*		进行等效电压输出。
+* @return:int
+* @Author:zch
+* @Date:2016.08.10
+*
+***********************************************/
+int ctpt_ctrl_private::exciting_out_volte(double out_vol)
+{
+	int ret = -1;
+	//the volte greater than Max_out_vol, change the frequency
+	if(out_vol>Max_out_vol)
+	{
+		ret = output_transform_freq(out_vol);
+	}
+	else
+	{
+		ret = fpga.safe_output(out_vol,true);
+	}
+	return ret;
+}
+
 /**********************************************
 * @Desc:直流电阻测试，输出直流电压，测量绕组两端
 *	   电压与电流，根据欧姆定律计算，取10组平均数
@@ -748,7 +690,7 @@ void ctpt_ctrl_private::run_test( void )
 int ctpt_ctrl_private::test_resistance(void)
 { 
     //模拟数据
-    result.secondary_winding_resistance = 1;
+    result.secondary_winding_resistance = 10;
     return 1;
 	
     raw_wave wave_i_load;
@@ -780,7 +722,7 @@ int ctpt_ctrl_private::test_resistance(void)
             wave_u_load.calculate_all();
 
 
-            printf("ch1=%fA,ch2=%fV,ch3=%fV,ch4=%fV,\n",
+            printf("exiting_cur=%fA,src_vol=%fV,pri_vol=%fV,sec_vol=%fV,\n",
                     wave_i_load.get_rms(),
                     wave_u_src.get_rms(),
                     wave_u_pri.get_rms(),
@@ -880,28 +822,28 @@ int ctpt_ctrl_private::test_ratio(void)
         std::list<double> vol_secondary; // 次级线圈电压
 
 
-        double vol_pri = 0;
-        double vol_sec = 0;
-        double start_v = 0.1;
-        double maxV = 120;
-        double maxI = 4.0;
+	double vol_pri = 0;
+	double vol_sec = 0;
+	double start_v = 0.1;
+	double maxV = Max_out_vol;
+	double maxI = Max_out_current;
 	double step_v = 0.3;
 
-        double deltaU = 0, deltaI = 0, k1=0,k2=0;
-        double pre_vol = 0, pre_cur = 0;
-        double incr = 1;
+	double deltaU = 0, deltaI = 0, k1=0,k2=0;
+	double pre_vol = 0, pre_cur = 0;
+	double incr = 1;
 
 	struct test_result tresult;
-	raw_wave ch1;               // load current
-	raw_wave ch2;               // src voltage
-	raw_wave ch3;               // primary voltage
-	raw_wave ch4;               // load voltage
+	raw_wave exiting_cur;               // load current
+	raw_wave src_vol;               // src voltage
+	raw_wave pri_vol;               // primary voltage
+	raw_wave sec_vol;               // load voltage
 
-        if (maxI > 5.0) {
-                maxI = 5.0;
+	if (maxI > 5.0) {
+		maxI = 5.0;
 	}
-        if (maxV > 120.0) {
-                maxV = 120.0;
+	if (maxV > 120.0) {
+		maxV = 120.0;
 	}
 	printf("++maxI: %f  maxV:  %f++\n", maxI, maxV);
 
@@ -909,14 +851,8 @@ int ctpt_ctrl_private::test_ratio(void)
 	vol_secondary.clear(); 
 
 #ifndef SIMULATION
-	fpga.dc_ac_f_set( 50 );
-	fpga.set_np_per_cycle( 512 );
-
-        fpga.select_range_by_value(fpga_dev::PRI_VOL_CHNL, 120.0);
-        fpga.select_range_by_value(fpga_dev::SECOND_VOL_CHNL, 120.0);
-        fpga.select_range_by_value(fpga_dev::LOAD_CUR_CHNL, 10.0);
-        fpga.select_range_by_value(fpga_dev::SRC_VOL_CHNL, 120.0);
-
+	set_output_freq_np(ct_setting.rated_frequency);
+	set_all_channel_max_range();
 	fpga.adc_start_sample();
 	fpga.start_output();
 #endif
@@ -947,15 +883,15 @@ int ctpt_ctrl_private::test_ratio(void)
 			break;
 		}
 		printf("++get_active_sample_wave++\n");
-		ret = fpga.get_active_sample_wave(&ch1, &ch2, &ch3, &ch4 );
+		ret = fpga.get_active_sample_wave(&exiting_cur, &src_vol, &pri_vol, &sec_vol );
 		if (ret != 0) {
 			break;
 		}
 	
-                vol_pri = ch3.get_base_rms();
-                vol_sec = ch4.get_base_rms();
-                tresult.vol = ch2.get_base_rms();
-                tresult.cur = ch1.get_base_rms();
+                vol_pri = pri_vol.get_base_rms();
+                vol_sec = sec_vol.get_base_rms();
+                tresult.vol = src_vol.get_base_rms();
+                tresult.cur = exiting_cur.get_base_rms();
 #else
                 vol_pri = p_vols[index];
                 vol_sec = g_vols[index];
@@ -970,7 +906,7 @@ int ctpt_ctrl_private::test_ratio(void)
 		vol_primary.push_back(vol_pri);
 		vol_secondary.push_back(vol_sec);
 #ifndef SIMULATION
-		printf("chnl1:%f chnl2:%f chnl3:%f chnl4:%f------\n", ch1.get_base_rms(), ch2.get_base_rms(), ch3.get_base_rms(), ch4.get_base_rms());
+		printf("chnl1:%f chnl2:%f chnl3:%f chnl4:%f------\n", exiting_cur.get_base_rms(), src_vol.get_base_rms(), pri_vol.get_base_rms(), sec_vol.get_base_rms());
 #endif
                 if (tresult.vol >= maxV || tresult.cur >= maxI || start_v >= maxV*1.5 ) {
 			break;
@@ -1008,7 +944,7 @@ int ctpt_ctrl_private::test_ratio(void)
 /**********************************************
 * @Desc:绘制励磁曲线，步进增加电压，测量绕组两端
 *	   电压与电流，并计算拐点
-* @return:1正常返回，-1异常返回
+* @return:1正常返回，-1异常返回， 2  找不到拐点
 * @Author:zch
 * @Date:2016.06.27
 *
@@ -1017,29 +953,30 @@ int ctpt_ctrl_private::test_excitation_output(double freq, std::list<struct test
 {
      struct test_result result;
      double step_v = 0.3;
-     double maxV = 120;
-     double maxI = 4;
+     double maxV = Max_out_vol;
+     double maxI = Max_out_current;
+	 
+	 bool isFind_knee_point = false;
+	 
+	 raw_wave exiting_cur;               // load current
+     raw_wave src_vol;               // src voltage
+     raw_wave pri_vol;               // primary voltage
+     raw_wave sec_vol;               // load voltage
+	 
 #ifdef SIMULATION
      int index=34;
      double start_v = 0.0;
-
 #else
      double start_v = 0.1;
 #endif
 
-     const char *filename = "./data.csv";
+	//将励磁数据记录到文件
+     const char *filename = "./exciting_data.csv";
      FILE *fp = fopen(filename, "w");
-     fp = fopen(filename, "w");
+     //fp = fopen(filename, "w");
 
-     bool isFind_knee_point = false;
-
-     raw_wave ch1;               // load current
-     raw_wave ch2;               // src voltage
-     raw_wave ch3;               // primary voltage
-     raw_wave ch4;               // load voltage
-
-     if (maxI > 4.0) {
-             maxI = 4.0;
+     if (maxI > 5.0) {
+             maxI = 5.0;
      }
      if (maxV > 120.0) {
              maxV = 120.0;
@@ -1050,16 +987,10 @@ int ctpt_ctrl_private::test_excitation_output(double freq, std::list<struct test
      npoint_exciting = 0;
 
 #ifndef SIMULATION
-     fpga.dc_ac_f_set( freq );
-     fpga.set_np_per_cycle( 512 );
-
-     fpga.select_range_by_value(fpga_dev::PRI_VOL_CHNL, 120.0);
-     fpga.select_range_by_value(fpga_dev::SECOND_VOL_CHNL, 120.0);
-     fpga.select_range_by_value(fpga_dev::LOAD_CUR_CHNL, 10.0);
-     fpga.select_range_by_value(fpga_dev::SRC_VOL_CHNL, 120.0);
-
-     fpga.adc_start_sample();
-     fpga.start_output();
+    set_output_freq_np(ct_setting.rated_frequency);
+	set_all_channel_max_range();
+    fpga.adc_start_sample();
+    fpga.start_output();
 #endif
      do {
          printf("++set_v %f++\n", start_v);
@@ -1076,23 +1007,26 @@ int ctpt_ctrl_private::test_excitation_output(double freq, std::list<struct test
                  step_v = 1;
          }
  #ifndef SIMULATION
-         int ret = fpga.safe_output(start_v, true);
+         int ret = exciting_out_volte(start_v);
          if (ret != 0) {
-                 break;
+			 break;
          }
          printf("++wait_output_steaby++\n");
          ret = fpga.wait_output_steaby();
          if (ret != 0) {
-                 break;
+			 break;
          }
          printf("++get_active_sample_wave++\n");
-         ret = fpga.get_active_sample_wave(&ch1, &ch2, &ch3, &ch4 );
+         ret = fpga.get_active_sample_wave(&exiting_cur, &src_vol, &pri_vol, &sec_vol );
          if (ret != 0) {
-                 break;
+			 break;
          }
-         result.vol = ch4.get_base_rms();
-         result.cur = ch1.get_base_rms();
-         printf("currnet:%f src_vol:%f pri_vol:%f sec_vol:%f------\n", ch1.get_base_rms(), ch2.get_base_rms(), ch3.get_base_rms(), ch4.get_base_rms());
+         result.vol = sec_vol.get_base_rms() * ct_setting.rated_frequency / test_frequency ; //U = f*U'/f'
+         result.cur = exiting_cur.get_base_rms();
+		 result.peak_vol = sec_vol.get_peek() * ct_setting.rated_frequency / test_frequency;
+		 result.peak_cur = exiting_cur.get_peek();
+		 
+         printf("currnet:%f peak_cur:%f sec_vol:%f peak_vol:%f transform sec_vol:%f------\n", result.cur, result.peak_cur, sec_vol.get_base_rms(), sec_vol.get_peek(),result.vol);
 #else
          result.vol = g_vols[index]*(test_frequency/50);
          result.cur = g_curs[index];
@@ -1102,7 +1036,7 @@ int ctpt_ctrl_private::test_excitation_output(double freq, std::list<struct test
          if(index<0)
              break;
 #endif
-
+		//写数据到文件
          if (fp){
              fprintf(fp,"%f,%f\n",
                     result.vol,
@@ -1138,13 +1072,13 @@ int ctpt_ctrl_private::test_excitation_output(double freq, std::list<struct test
                  break;
          }
          printf("++get_active_sample_wave++\n");
-         ret = fpga.get_active_sample_wave(&ch1, &ch2, &ch3, &ch4 );
+         ret = fpga.get_active_sample_wave(&exiting_cur, &src_vol, &pri_vol, &sec_vol );
          if (ret != 0) {
                  break;
          }
-         result.vol = ch4.get_base_rms();
-         result.cur = ch1.get_base_rms();
-         printf("currnet:%f src_vol:%f pri_vol:%f sec_vol:%f------\n", ch1.get_base_rms(), ch2.get_base_rms(), ch3.get_base_rms(), ch4.get_base_rms());
+         result.vol = sec_vol.get_base_rms();
+         result.cur = exiting_cur.get_base_rms();
+         printf("currnet:%f src_vol:%f pri_vol:%f sec_vol:%f------\n", exiting_cur.get_base_rms(), src_vol.get_base_rms(), pri_vol.get_base_rms(), sec_vol.get_base_rms());
 
          list_result->push_back(result);
          if (result.vol >= maxV || result.cur >= maxI || start_v >= maxV*2 || start_v >= 150) {
@@ -1205,8 +1139,7 @@ int ctpt_ctrl_private::test_excitation_output(double freq, std::list<struct test
 }
 
 /**********************************************
-* @Desc:绘制励磁曲线，步进增加电压，测量绕组两端
-*	   电压与电流，并计算拐点
+* @Desc: 测试励磁曲线
 * @return:1正常返回，-1异常返回
 * @Author:zch
 * @Date:2016.06.27
@@ -1216,12 +1149,9 @@ int ctpt_ctrl_private::test_excitation(void)
 {
     printf( "running exciting test\n");
 
-
-    test_frequency = 1.0;
-
     std::list<struct test_result> list_result;
 
-    int ret = test_excitation_output(test_frequency, &list_result);
+    int ret = test_excitation_output(ct_setting.rated_frequency, &list_result);
 
     switch(ret)
     {
@@ -1231,11 +1161,9 @@ int ctpt_ctrl_private::test_excitation(void)
         case 1:
             printf("exciting OK!\n");
             break;
-        case 2: //can not get to the knee point in current frequency
-            //fpga.stop_output();
-            //fpga.adc_stop_sample();
-            //test_frequency = 5.0;
-            //ret = test_excitation_output(test_frequency, list_result);
+        case 2: 
+			printf("can not get to the knee point\n"); 
+			return;
             break;
         default:
             break;
@@ -1879,6 +1807,38 @@ bool ctpt_ctrl_private::calculate_fs( void )
 
     return ok;
 }
+int ctpt_ctrl_private::check_config()
+{
+	int ret = 0;
+	//限定最大输出电流
+	this->_private->Max_out_current = (setting.max_current>setting.rated_secondary_current) ? setting.rated_secondary_current : setting.max_current;
+	//工频缺省值为50Hz
+	if(ct_setting.rated_frequency != 50.0 && ct_setting.rated_frequency !=60.0)
+		ct_setting.rated_frequency = 50;
+	
+	return 1;
+}
+void ctpt_ctrl_private::set_all_channel_max_range()
+{
+	fpga.select_range_by_value(fpga_dev::PRI_VOL_CHNL, 120.0);
+	fpga.select_range_by_value(fpga_dev::SECOND_VOL_CHNL, 120.0);
+	fpga.select_range_by_value(fpga_dev::LOAD_CUR_CHNL, 10.0);
+	fpga.select_range_by_value(fpga_dev::SRC_VOL_CHNL, 120.0);
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 int ctpt_ctrl::init( void )
 {
@@ -1897,7 +1857,8 @@ int ctpt_ctrl::config( const struct ct_setting &setting )
     this->_private->ct_setting = setting;
     this->_private->is_ct_mode = true;
     this->_private->is_pt_mode = false;
-    this->_private->user_mode = USER_TEST_NONE;
+    this->_private->user_mode = USER_TEST_EXCITING;
+	err = this->_private->check_config();
     return err;
 }
 
@@ -1924,7 +1885,7 @@ int ctpt_ctrl::config( const struct pt_setting &setting )
 
     this->_private->is_ct_mode = false;
     this->_private->is_pt_mode = true;
-    this->_private->user_mode = USER_TEST_NONE;
+    this->_private->user_mode = USER_TEST_EXCITING;
     this->_private->pt_setting = setting;
     return err;
 }
