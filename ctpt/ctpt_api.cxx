@@ -44,6 +44,8 @@ std::stringstream g_ctpt_log;
 #define SIMULATION
 //#undef SIMULATION
 
+#define MAN_DEBUG
+
 //定义最小输出频率
 #define MIN_FREQUENCY 1
 
@@ -644,6 +646,7 @@ int ctpt_ctrl_private::output_transform_freq(double out_vol)
 	double freq = ct_setting.rated_frequency;
 	//calculate the transform frequency
 	freq = (Max_out_vol*ct_setting.rated_frequency )/ out_vol;	
+	test_frequency = freq;
 	
 	if(freq < ((double)MIN_FREQUENCY))
 	{
@@ -651,8 +654,7 @@ int ctpt_ctrl_private::output_transform_freq(double out_vol)
 		return -1;
 	}		
 	//set the frequency
-	set_output_freq_np(freq);
-	test_frequency = freq;
+	set_output_freq_np(test_frequency); 
 	//output volte
 	return fpga.safe_output(Max_out_vol, true);
 }
@@ -955,8 +957,13 @@ int ctpt_ctrl_private::test_excitation_output(double freq, std::list<struct test
      double step_v = 0.3;
      double maxV = Max_out_vol;
      double maxI = Max_out_current;
-	 
+	 	 
 	 bool isFind_knee_point = false;
+	 double deltaU = 0, deltaI = 0, k1=0,k2=0;
+     double pre_vol = 0, pre_cur = 0;
+     double incr = 1;
+	 //拐点电压附近点数计数
+	 int np_near_knee_points_cnt = 0;
 	 
 	 raw_wave exiting_cur;               // load current
      raw_wave src_vol;               // src voltage
@@ -994,19 +1001,16 @@ int ctpt_ctrl_private::test_excitation_output(double freq, std::list<struct test
 #endif
      do {
          printf("++set_v %f++\n", start_v);
-         if (start_v < 1.0) {
-                 step_v = 1;
-         }
-         else if (start_v < 30.0) {
-                 step_v = 5;
-         }
-         else if (start_v < 100.0) {
-                 step_v = 10/*5.0*/;
-         }
-         else {
-                 step_v = 1;
-         }
- #ifndef SIMULATION
+
+#ifdef MAN_DEBUG
+		 printf("-- continue testing ? (y/n)-- \n");
+		 char a;
+		 std:cin>>a;
+		 if(a == 'n')
+			 break;
+#endif
+
+#ifndef SIMULATION
          int ret = exciting_out_volte(start_v);
          if (ret != 0) {
 			 break;
@@ -1024,9 +1028,13 @@ int ctpt_ctrl_private::test_excitation_output(double freq, std::list<struct test
          result.vol = sec_vol.get_base_rms() * ct_setting.rated_frequency / test_frequency ; //U = f*U'/f'
          result.cur = exiting_cur.get_base_rms();
 		 result.peak_vol = sec_vol.get_peek() * ct_setting.rated_frequency / test_frequency;
-		 result.peak_cur = exiting_cur.get_peek();
-		 
+		 result.peak_cur = exiting_cur.get_peek();			 
+		 	
          printf("currnet:%f peak_cur:%f sec_vol:%f peak_vol:%f transform sec_vol:%f------\n", result.cur, result.peak_cur, sec_vol.get_base_rms(), sec_vol.get_peek(),result.vol);
+
+		 if (result.cur >= maxI || test_frequency < 1) {
+             break;
+         }
 #else
          result.vol = g_vols[index]*(test_frequency/50);
          result.cur = g_curs[index];
@@ -1036,99 +1044,76 @@ int ctpt_ctrl_private::test_excitation_output(double freq, std::list<struct test
          if(index<0)
              break;
 #endif
+		//calculate the Knee point
+		 
+		 deltaU = result.vol - pre_vol;
+		 deltaI = result.cur - pre_cur;
+		 k1 = deltaU *  pre_cur;
+		 k2 = deltaI * pre_vol;
+		 if(k1 != 0 && k2 !=0)
+		 {
+			 incr = k1 / k2;
+		 }
+		 //Get to the Knee Point
+		 if ( incr <= 0.2)
+		 {
+			 isFind_knee_point = true;
+			 printf("Get to the knee point, knee rate:%d\n",incr);
+		 }
+		 else {isFind_knee_point = false;}
+		 
+		 //重设输出电压
+		 if(isFind_knee_point)
+		 {
+			if(np_near_knee_points_cnt<5)
+				step_v = start_v*0.02;
+			else
+				step_v = start_v*0.2;
+			np_near_knee_points_cnt++;
+		 }
+		 else{
+			 if (start_v < 1.0) {
+				 step_v = 0.5;
+			 }
+			 else if (start_v < 30.0) {
+				 step_v = 2.5;
+			 }
+			 else if (start_v < 100.0) {
+				 step_v = 5.0;
+			 }
+			 else {
+				 step_v = start_v * 0.1;
+			 }
+		 }
+		 
+         start_v += step_v;
+		 
+		 
 		//写数据到文件
          if (fp){
-             fprintf(fp,"%f,%f\n",
-                    result.vol,
-                    result.cur
-                 );
+             fprintf(fp,"%f,%f\n", result.vol, result.cur );
          }
-
-         list_result->push_back(result);
-         if (result.vol >= maxV || result.cur >= maxI || start_v >= maxV*2 || start_v >= 150) {
-                 break;
-         }
-         start_v += step_v;
+		 
+		 if(result.vol < pre_vol || result.cur < pre_cur)
+			 continue;
+         list_result->push_back(result); 
+		 	 
+		 pre_vol = result.vol;
+		 pre_cur = result.cur;
+		 
      } while(!is_stopped);
 
      if(fp)
         fclose(fp);
-
- /*******************************************************************/
- #if 0
-     double deltaU = 0, deltaI = 0, k1=0,k2=0;
-     double pre_vol = 0, pre_cur = 0;
-     double incr = 1;
-     do{
-         printf("++set_v %f++\n", start_v);
-
-         int ret = fpga.safe_output(start_v, true);
-         if (ret != 0) {
-                 break;
-         }
-         printf("++wait_output_steaby++\n");
-         ret = fpga.wait_output_steaby();
-         if (ret != 0) {
-                 break;
-         }
-         printf("++get_active_sample_wave++\n");
-         ret = fpga.get_active_sample_wave(&exiting_cur, &src_vol, &pri_vol, &sec_vol );
-         if (ret != 0) {
-                 break;
-         }
-         result.vol = sec_vol.get_base_rms();
-         result.cur = exiting_cur.get_base_rms();
-         printf("currnet:%f src_vol:%f pri_vol:%f sec_vol:%f------\n", exiting_cur.get_base_rms(), src_vol.get_base_rms(), pri_vol.get_base_rms(), sec_vol.get_base_rms());
-
-         list_result->push_back(result);
-         if (result.vol >= maxV || result.cur >= maxI || start_v >= maxV*2 || start_v >= 150) {
-                 break;
-         }
-
-         if (start_v < 1.0) {
-                 step_v = 1;
-         }
-         else if (start_v < 30.0) {
-                 step_v = 2.5;
-         }
-         else if (start_v < 100.0) {
-                 step_v = 5.0;
-         }
-         else {
-                 step_v = 10;
-         }
-
-         deltaU = result.vol - pre_vol;
-         deltaI = result.cur - pre_cur;
-         k1 = deltaU *  pre_cur;
-         k2 = deltaI * pre_vol;
-         if(k1 != 0 && k2 !=0)
-         {
-             incr = k1 / k2;
-         }
-         //Get to the Knee Point
-         if ( incr <= 0.2)
-         {
-             step_v = start_v*0.02;
-             isFind_knee_point = true;
-             printf("Get to the knee point, knee rate:%d\n",incr);
-         }
-
-         start_v += step_v;
-
-         pre_vol = result.vol;
-         pre_cur = result.cur;
-     }while(!is_stopped);
- #endif
-  /*******************************************************************/
+	
 #ifndef SIMULATION
      fpga.stop_output();
      fpga.adc_stop_sample();
 #endif
-     //非正常停止
-     if(is_stopped)
+     //异常停止
+     if(!is_stopped)
      {
-         printf("stop unexpect!\n");
+         printf("!!!exiting error!!!!\n");
          return -1;
      }
      if(isFind_knee_point)
@@ -1186,22 +1171,10 @@ int ctpt_ctrl_private::test_excitation(void)
         if (!exciting_voltage) {
                 printf("++p_this->exciting_voltage error++\n");
         }
-        for(std::list<struct test_result>::iterator it = list_result.begin(); it != list_result.end(); it++) {
-                if (i == 0) {
-                        preV = it->vol;
-                        preC = it->cur;
-                }
-                else {
-                        if (preV > it->vol || preC > it->cur*1.1) {
-                                continue;
-                        }
-                        preV = it->vol;
-                        preC = it->cur;
-                }
-                exciting_voltage[i] = it->vol*(50/test_frequency);//translate to work frequency
-                exciting_current[i] = it->cur;
-                printf("++i: %d vol:%f  cur:%f++\n", i, it->vol, it->cur);
-                i++;
+        for(std::list<struct test_result>::iterator it = list_result.begin(); it != list_result.end(); it++) {               
+			exciting_voltage[i] = it->vol;
+			exciting_current[i] = it->cur;
+			i++;
         }
         npoint_exciting = i;
         find_knee_point();
